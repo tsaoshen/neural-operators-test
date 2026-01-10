@@ -110,23 +110,28 @@ def main():
     for split in ["train", "val", "test"]:
         data_split, u_ref_snap = generate_split(cfg, split, device=device, dtype=dtype)
         save_path = os.path.join(out_dir, f"{name}_{split}.pt")
-        save_pt(save_path, data_split)
+        # save_pt(save_path, data_split)
+        # print(f"[OK] Saved {split}: {save_path}")
+        data_split2 = {}
+        data_split2['x'] = data_split['u0']
+        data_split2['y'] = data_split['u']
+        save_pt(save_path, data_split2)
         print(f"[OK] Saved {split}: {save_path}")
 
-        # Optionally save high-res test
-        if split == "test" and bool(cfg["save"].get("save_hr_test", False)):
-            N_test_hr = int(cfg["save"].get("N_test_hr", cfg["solver"]["N_ref"]))
-            # Downsample high-res snapshots to N_test_hr for evaluation
-            u_hr = downsample_1d(u_ref_snap, N_test_hr).contiguous()
-            hr = {
-                "u_hr": u_hr,
-                "t": data_split["t"],
-                "x_hr": make_grid_1d(N_test_hr, L=float(cfg["domain"]["L"]), device=device, dtype=dtype),
-                "nu": data_split["nu"],
-            }
-            save_hr_path = os.path.join(out_dir, f"{name}_test_hr{N_test_hr}.pt")
-            save_pt(save_hr_path, hr)
-            print(f"[OK] Saved test high-res: {save_hr_path}")
+        # # Optionally save high-res test
+        # if split == "test" and bool(cfg["save"].get("save_hr_test", False)):
+        #     N_test_hr = int(cfg["save"].get("N_test_hr", cfg["solver"]["N_ref"]))
+        #     # Downsample high-res snapshots to N_test_hr for evaluation
+        #     u_hr = downsample_1d(u_ref_snap, N_test_hr).contiguous()
+        #     hr = {
+        #         "u_hr": u_hr,
+        #         "t": data_split["t"],
+        #         "x_hr": make_grid_1d(N_test_hr, L=float(cfg["domain"]["L"]), device=device, dtype=dtype),
+        #         "nu": data_split["nu"],
+        #     }
+        #     save_hr_path = os.path.join(out_dir, f"{name}_test_hr{N_test_hr}.pt")
+        #     save_pt(save_hr_path, hr)
+        #     print(f"[OK] Saved test high-res: {save_hr_path}")
 
 
 if __name__ == "__main__":
