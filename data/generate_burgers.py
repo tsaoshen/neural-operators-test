@@ -110,13 +110,13 @@ def main():
     for split in ["train", "val", "test"]:
         data_split, u_ref_snap = generate_split(cfg, split, device=device, dtype=dtype)
         save_path = os.path.join(out_dir, f"{name}_{split}.pt")
-        # save_pt(save_path, data_split)
-        # print(f"[OK] Saved {split}: {save_path}")
-        data_split2 = {}
-        data_split2['x'] = data_split['u0']
-        data_split2['y'] = data_split['u']
-        save_pt(save_path, data_split2)
+        save_pt(save_path, data_split)
         print(f"[OK] Saved {split}: {save_path}")
+        # data_split2 = {}
+        # data_split2['x'] = data_split['u0']
+        # data_split2['y'] = data_split['u']
+        # save_pt(save_path, data_split2)
+        # print(f"[OK] Saved {split}: {save_path}")
 
         # # Optionally save high-res test
         # if split == "test" and bool(cfg["save"].get("save_hr_test", False)):
