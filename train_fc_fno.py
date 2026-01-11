@@ -1,14 +1,13 @@
 import os
-import math
 import argparse
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from data.burgers_dataset import BurgersOperatorDataset, burgers_collate
 from models.fno1d import FNO1d
 from models.flux_corrector import FluxCorrector1d
 from models.fc_fno import FCFNO1d
+from models.losses_burgers import BurgersWeakResidualLoss, BurgersEntropyInequalityLoss
 
 
 def make_input(u0, x, nu):
@@ -16,15 +15,12 @@ def make_input(u0, x, nu):
     u0: [B,N]
     x:  [N]
     nu: [B,1]
-    returns x_in: [B, C, N]
+    returns: [B,3,N] channels [u0, x, nu]
     """
     B, N = u0.shape
     x_chan = x[None, :].expand(B, N)
-    nu_chan = nu.expand(B, 1).expand(B, N)
-
-    # channels: [u0, x, nu]
-    x_in = torch.stack([u0, x_chan, nu_chan], dim=1)  # [B,3,N]
-    return x_in
+    nu_chan = nu[:, 0][:, None].expand(B, N)
+    return torch.stack([u0, x_chan, nu_chan], dim=1)
 
 
 @torch.no_grad()
@@ -41,8 +37,11 @@ def evaluate(model, loader, device):
         dx = float((x[1] - x[0]).item())
         x_in = make_input(u0, x, nu)
 
-        y = model(x_in, dx) if isinstance(model, FCFNO1d) else model(x_in)
-        # y shape [B,T,N]
+        if isinstance(model, FCFNO1d):
+            y = model(x_in, dx)
+        else:
+            y = model(x_in)
+
         loss = torch.mean((y - u_true) ** 2)
         mse += loss.item() * u0.shape[0]
         n += u0.shape[0]
@@ -57,6 +56,10 @@ def train_one(
     lr=1e-3,
     epochs=50,
     save_path=None,
+    lambda_weak=0.0,
+    lambda_ent=0.0,
+    weak_loss=None,
+    ent_loss=None,
 ):
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
@@ -65,11 +68,16 @@ def train_one(
     for ep in range(1, epochs + 1):
         model.train()
         running = 0.0
+        running_sup = 0.0
+        running_w = 0.0
+        running_e = 0.0
         n = 0
+
         for batch in train_loader:
             u0 = batch["u0"].to(device)
             u_true = batch["u"].to(device)
             x = batch["x"].to(device)
+            t = batch["t"].to(device)
             nu = batch["nu"].to(device)
 
             dx = float((x[1] - x[0]).item())
@@ -80,27 +88,61 @@ def train_one(
             else:
                 y = model(x_in)
 
-            loss = torch.mean((y - u_true) ** 2)
+            # supervised
+            sup = torch.mean((y - u_true) ** 2)
+
+            loss = sup
+            wv = torch.tensor(0.0, device=device)
+            ev = torch.tensor(0.0, device=device)
+
+            if lambda_weak > 0.0:
+                assert weak_loss is not None
+                wv = weak_loss(y, x, t, nu)
+                loss = loss + lambda_weak * wv
+
+            if lambda_ent > 0.0:
+                assert ent_loss is not None
+                ev = ent_loss(y, x, t)
+                loss = loss + lambda_ent * ev
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
 
-            running += loss.item() * u0.shape[0]
-            n += u0.shape[0]
+            B = u0.shape[0]
+            running += loss.item() * B
+            running_sup += sup.item() * B
+            running_w += wv.item() * B
+            running_e += ev.item() * B
+            n += B
 
         scheduler.step()
-        train_mse = running / max(n, 1)
+        train_loss = running / max(n, 1)
+        train_sup = running_sup / max(n, 1)
+        train_w = running_w / max(n, 1)
+        train_e = running_e / max(n, 1)
+
         val_mse = evaluate(model, val_loader, device)
 
         if val_mse < best_val:
             best_val = val_mse
             if save_path is not None:
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                torch.save({"model": model.state_dict(), "val_mse": best_val}, save_path)
+                torch.save(
+                    {
+                        "model": model.state_dict(),
+                        "val_mse": best_val,
+                        "lambda_weak": lambda_weak,
+                        "lambda_ent": lambda_ent,
+                    },
+                    save_path,
+                )
 
-        print(f"Epoch {ep:03d} | train_mse={train_mse:.4e} | val_mse={val_mse:.4e} | best={best_val:.4e}")
+        print(
+            f"Epoch {ep:03d} | train_loss={train_loss:.4e} (sup={train_sup:.4e}, "
+            f"weak={train_w:.4e}, ent={train_e:.4e}) | val_mse={val_mse:.4e} | best={best_val:.4e}"
+        )
 
     return best_val
 
@@ -125,6 +167,14 @@ def main():
     parser.add_argument("--corr_layers", type=int, default=3)
     parser.add_argument("--corr_kernel", type=int, default=5)
 
+    # Weak + entropy loss params
+    parser.add_argument("--lambda_weak", type=float, default=0.0)
+    parser.add_argument("--lambda_ent", type=float, default=0.0)
+    parser.add_argument("--weak_pmax", type=int, default=6)
+    parser.add_argument("--weak_qmax", type=int, default=6)
+    parser.add_argument("--ent_k", type=int, default=16)
+    parser.add_argument("--ent_bumps", type=int, default=8)
+
     # Saving
     parser.add_argument("--out_dir", type=str, default="runs/fc_fno")
     parser.add_argument("--name", type=str, default="burgers")
@@ -139,9 +189,8 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=0, collate_fn=burgers_collate)
     val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=0, collate_fn=burgers_collate)
 
-    # Determine output channels from dataset
     T = train_ds.u.shape[1]
-    in_channels = 3  # u0, x, nu
+    in_channels = 3  # [u0, x, nu]
 
     fno = FNO1d(
         in_channels=in_channels,
@@ -162,6 +211,16 @@ def main():
         save_path = os.path.join(args.out_dir, f"{args.name}_fno.pt")
         print("[Model] Baseline FNO")
 
+    weak_loss = None
+    ent_loss = None
+    if args.lambda_weak > 0.0:
+        weak_loss = BurgersWeakResidualLoss(p_max=args.weak_pmax, q_max=args.weak_qmax, use_cos=True).to(device)
+        print(f"[Loss] Weak residual enabled: lambda_weak={args.lambda_weak}")
+
+    if args.lambda_ent > 0.0:
+        ent_loss = BurgersEntropyInequalityLoss(n_k=args.ent_k, n_bumps=args.ent_bumps).to(device)
+        print(f"[Loss] Entropy inequality enabled: lambda_ent={args.lambda_ent}")
+
     best = train_one(
         model=model,
         train_loader=train_loader,
@@ -170,6 +229,10 @@ def main():
         lr=args.lr,
         epochs=args.epochs,
         save_path=save_path,
+        lambda_weak=args.lambda_weak,
+        lambda_ent=args.lambda_ent,
+        weak_loss=weak_loss,
+        ent_loss=ent_loss,
     )
 
     print(f"[DONE] best_val_mse={best:.4e} | saved: {save_path}")

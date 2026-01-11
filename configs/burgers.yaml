@@ -11,14 +11,14 @@ T: 1.0
 solver:
   scheme: "weno5_ssprk3"
   cfl: 0.4
-  nu: 0.001          # viscosity (set 0.0 for inviscid)
+  nu: 0.01          # viscosity (set 0.0 for inviscid)
   N_ref: 4096        # high-res reference grid used for simulation
   dealias: false     # (unused here; WENO is not spectral)
 
 # Output sampling
 output:
-  N_out: 256         # downsample to this spatial resolution for stored data
-  nt_out: 16         # number of time snapshots to store (including t=0)
+  N_out: 64         # downsample to this spatial resolution for stored data
+  nt_out: 64         # number of time snapshots to store (including t=0)
   include_u0: true   # store u0 separately
 
 # Dataset settings
